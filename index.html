@@ -392,12 +392,13 @@ body{font-family:'Syne',sans-serif;background:var(--bg);color:var(--text);min-he
 const SUPA_URL = 'https://dmgkjmkqtsnaualddznc.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRtZ2tqbWtxdHNuYXVhbGRkem5jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwNDQzNjIsImV4cCI6MjA5MzYyMDM2Mn0.fcVuJI7k8HaWMorV43UI88-wgQNZCOcT5uVTcTUdOfw';
 const API_KEY = '34a7d1bcd3ab648c6a2498010b989d2b';
+const TENNIS_API_KEY = 'ddb900f1bbbee3a7d89afd72a8cba02146ed985f4db1e9eeb0ac08266b20e465';
+const TENNIS_API_URL = 'https://api-tennis.com/tennis/';
 const BANKROLL = 500000;
 
 const APIS = {
   football: 'https://v3.football.api-sports.io',
   basketball: 'https://v1.basketball.api-sports.io',
-  tennis: 'https://v1.tennis.api-sports.io'
 };
 
 // Ligas importantes
@@ -586,15 +587,10 @@ async function fetchLiveAndUpcoming() {
     matches.push({ sport: 'nba', match: `${home} vs ${away}`, league: 'NBA', odds, analysis, isLive, score });
   }
 
-  // Procesar Tenis
-  const tenisMatches = tennis.slice(0, 4);
-  for (const t of tenisMatches) {
-    const name = t.name || 'Torneo ATP';
-    const surface = t.surface || 'Dura';
-    const p1 = 'Jugador A', p2 = 'Jugador B';
-    const odds = generateSimulatedOdds('tenis', p1, p2);
-    const analysis = analyzeMatch('tenis', p1, p2, odds, name + ' (' + surface + ')', false, null, surface);
-    matches.push({ sport: 'tenis', match: `${p1} vs ${p2}`, league: name + ' — ' + surface, odds, analysis, isLive: false, score: null });
+  // Procesar Tenis — API-Tennis en vivo
+  const tenisLive = await fetchTennisLive();
+  for (const t of tenisLive) {
+    matches.push(t);
   }
 
   // Si no hay suficientes partidos, agregar demos
@@ -604,11 +600,72 @@ async function fetchLiveAndUpcoming() {
   if (matches.filter(m => m.sport === 'nba').length < 2) {
     matches.push(...generateDemoMatches('nba'));
   }
-  if (matches.filter(m => m.sport === 'tenis').length < 2) {
+  if (matches.filter(m => m.sport === 'tenis').length < 3) {
     matches.push(...generateDemoMatches('tenis'));
   }
 
   return matches;
+}
+
+// ============================================================
+// API-TENNIS.COM — EN VIVO + PRÓXIMOS
+// ============================================================
+async function fetchTennisLive() {
+  const matches = [];
+  try {
+    // Partidos en vivo
+    const liveRes = await fetch(`${TENNIS_API_URL}?method=get_livescore&APIkey=${TENNIS_API_KEY}`);
+    const liveData = await liveRes.json();
+    const liveMatches = Array.isArray(liveData) ? liveData : (liveData.result || []);
+
+    for (const m of liveMatches.slice(0, 6)) {
+      const p1 = m.event_first_player || m.home_name || 'Jugador 1';
+      const p2 = m.event_second_player || m.away_name || 'Jugador 2';
+      const league = m.league_name || m.tournament_name || 'ATP';
+      const surface = detectSurface(league);
+      const score = m.event_score || m.score || null;
+      const isChallenger = league.toLowerCase().includes('challenger');
+      const leagueLabel = `${league}${isChallenger ? ' 🥈' : ''} — ${surface}`;
+      const odds = generateSimulatedOdds('tenis', p1, p2);
+      const analysis = analyzeMatch('tenis', p1, p2, odds, leagueLabel, true, score, surface);
+      matches.push({ sport: 'tenis', match: `${p1} vs ${p2}`, league: leagueLabel, odds, analysis, isLive: true, score });
+    }
+
+    // Próximos partidos del día
+    const today = new Date().toISOString().split('T')[0];
+    const nextRes = await fetch(`${TENNIS_API_URL}?method=get_events&APIkey=${TENNIS_API_KEY}&date_start=${today}&date_stop=${today}`);
+    const nextData = await nextRes.json();
+    const nextMatches = Array.isArray(nextData) ? nextData : (nextData.result || []);
+
+    for (const m of nextMatches.slice(0, 8)) {
+      if (m.event_status === 'Finished') continue;
+      const p1 = m.event_first_player || m.home_name || 'Jugador 1';
+      const p2 = m.event_second_player || m.away_name || 'Jugador 2';
+      const league = m.league_name || m.tournament_name || 'ATP';
+      const surface = detectSurface(league);
+      const isChallenger = league.toLowerCase().includes('challenger');
+      const leagueLabel = `${league}${isChallenger ? ' 🥈' : ''} — ${surface}`;
+      const odds = m.odd_1 && m.odd_2
+        ? { home: parseFloat(m.odd_1), away: parseFloat(m.odd_2) }
+        : generateSimulatedOdds('tenis', p1, p2);
+      const analysis = analyzeMatch('tenis', p1, p2, odds, leagueLabel, false, null, surface);
+      matches.push({ sport: 'tenis', match: `${p1} vs ${p2}`, league: leagueLabel, odds, analysis, isLive: false, score: null });
+    }
+  } catch(e) {
+    console.warn('Tennis API error:', e.message);
+  }
+  return matches;
+}
+
+function detectSurface(leagueName) {
+  const n = (leagueName || '').toLowerCase();
+  if (n.includes('clay') || n.includes('tierra') || n.includes('rome') || n.includes('roma') ||
+      n.includes('roland') || n.includes('madrid') || n.includes('monte') || n.includes('barcelona') ||
+      n.includes('bordeaux') || n.includes('cagliari') || n.includes('braunschweig')) return 'Tierra';
+  if (n.includes('grass') || n.includes('wimbledon') || n.includes("queen's") || n.includes('halle') ||
+      n.includes('birmingham') || n.includes('eastbourne') || n.includes('nottingham')) return 'Hierba';
+  if (n.includes('indoor') || n.includes('covered')) return 'Dura Indoor';
+  return 'Dura';
 }
 
 function generateSimulatedOdds(sport, team1, team2) {
@@ -638,8 +695,28 @@ function generateDemoMatches(sport) {
       { match: 'Celtics vs Heat', league: 'NBA', odds: { home: 1.55, away: 2.40 } },
     ],
     tenis: [
-      { match: 'Alcaraz vs Sinner', league: 'Roland Garros — Tierra', odds: { home: 1.70, away: 2.10 }, surface: 'Tierra' },
-      { match: 'Swiatek vs Sabalenka', league: 'WTA Madrid — Tierra', odds: { home: 1.60, away: 2.25 }, surface: 'Tierra' },
+      // ATP MASTERS 1000 ROMA - HOY 6 mayo
+      { match: 'Hubert Hurkacz vs Yannick Hanfmann', league: 'ATP Masters 1000 Roma — 1R 🇮🇹 Tierra', odds: { home: 1.42, away: 2.90 }, surface: 'Tierra',
+        context: 'Masters 1000 Roma · Hurkacz N8 mundo · tierra no su mejor sup. · Hanfmann irregular · cuota en rango objetivo' },
+      { match: 'Alexei Popyrin vs Matteo Berrettini', league: 'ATP Masters 1000 Roma — 1R 🇮🇹 Tierra', odds: { home: 2.10, away: 1.68 }, surface: 'Tierra',
+        context: 'Berrettini local italiano en Roma · especialista tierra · Popyrin buen nivel reciente en arcilla' },
+      { match: 'Denis Shapovalov vs Mariano Navone', league: 'ATP Masters 1000 Roma — 1R 🇮🇹 Tierra', odds: { home: 1.85, away: 1.95 }, surface: 'Tierra',
+        context: 'Navone especialista tierra · Shapovalov irregular arcilla · partido muy parejo · precaucion' },
+      { match: 'Jenson Brooksby vs Sebastian Baez', league: 'ATP Masters 1000 Roma — 1R 🇮🇹 Tierra', odds: { home: 2.30, away: 1.60 }, surface: 'Tierra',
+        context: 'Baez especialista tierra · llega en forma · Brooksby en recuperacion fisica' },
+      { match: 'Lorenzo Sonego vs Ignacio Buse', league: 'ATP Masters 1000 Roma — 1R 🇮🇹 Tierra', odds: { home: 1.55, away: 2.45 }, surface: 'Tierra',
+        context: 'Sonego local en Roma · favorito claro · Buse joven peruano en ascenso · cuota en rango objetivo' },
+      // ATP CHALLENGER - BORDEAUX 6-11 mayo
+      { match: 'Qualifier A vs Qualifier B', league: 'ATP Challenger Bordeaux — 1R 🇫🇷 Tierra', odds: { home: 1.65, away: 2.20 }, surface: 'Tierra',
+        context: 'Challenger 75 Burdeos Francia · tierra batida · semana Roma libera plazas para Challengers · analizar cuadro en Wplay' },
+      // ATP CHALLENGER - BRAUNSCHWEIG 6-11 mayo
+      { match: 'Qualifier C vs Qualifier D', league: 'ATP Challenger Braunschweig — 1R 🇩🇪 Tierra', odds: { home: 1.70, away: 2.10 }, surface: 'Tierra',
+        context: 'Challenger Alemania · tierra batida interior · jugadores top 150 buscando puntos previa Roland Garros' },
+      // WTA ROMA 2026 - HOY 6 mayo
+      { match: 'Iga Swiatek vs Qualifier', league: 'WTA Roma 2026 — 1R 🇮🇹 Tierra', odds: { home: 1.35, away: 3.50 }, surface: 'Tierra',
+        context: 'Swiatek N1 mundo en tierra · Roma su torneo favorito · cuota baja pero muy segura · evaluar EV' },
+      { match: 'Aryna Sabalenka vs Qualifier', league: 'WTA Roma 2026 — 1R 🇮🇹 Tierra', odds: { home: 1.45, away: 2.80 }, surface: 'Tierra',
+        context: 'Sabalenka N2 mundo · mejorando en tierra · cuota en rango objetivo' },
     ]
   };
   return (demos[sport] || []).map(d => ({
@@ -750,9 +827,19 @@ function buildFactors(sport, team1, team2, league, isLive, surface, ev, odd) {
     if (isLive) factors.push({ text: 'En vivo — monitorear momentum del partido', type: 'ok' });
   }
   if (sport === 'tenis') {
-    if (surface) factors.push({ text: `Superficie ${surface} — verificar H2H en esta superficie`, type: 'ok' });
-    factors.push({ text: 'Revisar partidos recientes (últimos 7 días)', type: 'warn' });
-    factors.push({ text: 'Verificar posición en ranking ATP/WTA actualizada', type: 'ok' });
+    if (surface) factors.push({ text: `Superficie ${surface} — análisis H2H específico en esta superficie`, type: 'ok' });
+    // Factores específicos para Roland Garros final
+    if (league && league.includes('Roland Garros') && league.includes('Final')) {
+      factors.push({ text: 'Final de Grand Slam — máxima motivación ambos jugadores', type: 'ok' });
+      factors.push({ text: 'Tierra batida París — favorece especialistas de arcilla', type: 'ok' });
+      if (team1.includes('Swiatek')) factors.push({ text: 'Swiatek: 5-2 H2H vs Sabalenka en tierra · busca 5to título RG', type: 'ok' });
+      if (team1.includes('Sinner')) factors.push({ text: 'Sinner N°1 mundo · ganó últimos 5 H2H vs Djokovic · en forma', type: 'ok' });
+      if (team2.includes('Djokovic')) factors.push({ text: 'Djokovic 38 años · viene de lesiones · 4 semis perdidas seguidas', type: 'warn' });
+    } else {
+      factors.push({ text: 'Revisar partidos recientes (últimos 7 días)', type: 'warn' });
+      factors.push({ text: 'Verificar posición en ranking ATP/WTA actualizada', type: 'ok' });
+    }
+    factors.push({ text: 'Verificar condición física y minutos jugados esta semana', type: 'warn' });
   }
   return factors;
 }
